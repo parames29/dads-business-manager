@@ -12,6 +12,24 @@ st.set_page_config(
 )
 
 # Configure these in Streamlit Cloud -> App settings -> Secrets.
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    with st.form("login_form"):
+        password = st.text_input("Enter your app password", type="password")
+        submitted = st.form_submit_button("Unlock")
+
+    if submitted:
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password. Try again.")
+
+    st.stop()
+
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 db = create_client(url, key)

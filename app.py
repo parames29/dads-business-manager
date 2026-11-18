@@ -6,7 +6,7 @@ from decimal import Decimal
 from supabase import create_client
 
 st.set_page_config(
-    page_title="Dad's Business Manager",
+    page_title="Theava Maju",
     page_icon="🚛",
     layout="centered"
 )
@@ -95,7 +95,7 @@ def show_expenses(rows):
     } for e in rows]
     st.dataframe(data, use_container_width=True)
 
-st.title("🚛 Dad's Business Manager")
+st.title("🚛 THEAVA MAJU")
 
 menu = st.sidebar.radio("Menu", [
     "Dashboard",

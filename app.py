@@ -17,6 +17,9 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
+    st.title("🚛 THEAVA MAJU")
+    st.caption("Business Management System")
+
     with st.form("login_form"):
         password = st.text_input("Enter your app password", type="password")
         submitted = st.form_submit_button("Unlock")

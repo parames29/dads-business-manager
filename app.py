@@ -227,7 +227,7 @@ if menu == "Dashboard":
                 )
 
     st.divider()
-   st.markdown("## Vehicles")
+    st.markdown("## Vehicles")
     st.caption("Manage your daily business activities")
 
 

@@ -37,13 +37,16 @@ url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 db = create_client(url, key)
 
+def load_vehicles():
+    return db.table("vehicles").select("*").order(
+        "registration"
+    ).execute().data or []
+
+vehicles = load_vehicles()
+
 VEHICLES = [
-    "PPF4995",
-    "PPD7995",
-    "PJX3100",
-    "PLT7995",
-    "AKU 995",
-    "Car - plate to add"
+    v["registration"] for v in vehicles
+    if v["is_active"]
 ]
 
 CATEGORIES = [

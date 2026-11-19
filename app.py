@@ -583,10 +583,53 @@ if menu == "Dashboard" and selected_vehicle:
 # DASHBOARD
 # --------------------------------------------------
 
+
+
 elif menu == "Dashboard":
 
     st.markdown("## Vehicles")
     st.caption("Select a vehicle to manage its trips and expenses.")
+
+    # Show vehicles FIRST
+    if not active_vehicles:
+        st.info("No active vehicles. Add your first vehicle.")
+
+    for start in range(0, len(active_vehicles), 2):
+        cols = st.columns(2)
+
+        for col, v in zip(
+            cols,
+            active_vehicles[start:start + 2]
+        ):
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="vehicle-card">
+                        <div class="vehicle-number">
+                            {v["registration"]}
+                        </div>
+                        <div class="vehicle-type">
+                            {v["vehicle_type"]}
+                        </div>
+                        <div class="active-label">
+                            ● ACTIVE
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                if st.button(
+                    "Open Vehicle →",
+                    key=f'open_vehicle_{v["id"]}',
+                    use_container_width=True
+                ):
+                    st.session_state.selected_vehicle_id = v["id"]
+                    st.session_state.vehicle_action = None
+                    st.rerun()
+
+    # ADD VEHICLE BUTTON BELOW THE VEHICLE LIST
+    st.divider()
 
     if st.button("＋ Add Vehicle", use_container_width=True):
         st.session_state.show_add_vehicle = not (
@@ -632,48 +675,6 @@ elif menu == "Dashboard":
                 st.session_state.show_add_vehicle = False
                 st.success("Vehicle added.")
                 st.rerun()
-
-    st.divider()
-
-    if not active_vehicles:
-        st.info("No active vehicles. Add your first vehicle.")
-
-    for start in range(0, len(active_vehicles), 2):
-
-        cols = st.columns(2)
-
-        for col, v in zip(
-            cols,
-            active_vehicles[start:start + 2]
-        ):
-
-            with col:
-
-                st.markdown(
-                    f"""
-                    <div class="vehicle-card">
-                        <div class="vehicle-number">
-                            {v["registration"]}
-                        </div>
-                        <div class="vehicle-type">
-                            {v["vehicle_type"]}
-                        </div>
-                        <div class="active-label">
-                            ● ACTIVE
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                if st.button(
-                    "Open Vehicle  →",
-                    key=f'open_vehicle_{v["id"]}',
-                    use_container_width=True
-                ):
-                    st.session_state.selected_vehicle_id = v["id"]
-                    st.session_state.vehicle_action = None
-                    st.rerun()
 
 
 # --------------------------------------------------

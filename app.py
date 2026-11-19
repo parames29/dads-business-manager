@@ -8,7 +8,8 @@ from supabase import create_client
 st.set_page_config(
     page_title="Theava Maju",
     page_icon="🚛",
-    layout="centered"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 # Configure these in Streamlit Cloud -> App settings -> Secrets.

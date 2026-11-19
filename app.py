@@ -1,6 +1,7 @@
 
 import streamlit as st
 from datetime import date
+from uuid import uuid4
 from supabase import create_client
 
 # =========================================================
@@ -79,13 +80,52 @@ hr {
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 3. LOGIN
+# 3. SESSION STATE
 # =========================================================
 
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
+defaults = {
+    "authenticated": False,
+    "page": "Dashboard",
+    "selected_vehicle_id": None,
+    "vehicle_action": None,
+    "used_submission_tokens": set(),
+    "trip_form_token": str(uuid4()),
+    "vehicle_expense_form_token": str(uuid4()),
+    "business_expense_form_token": str(uuid4()),
+    "flash_message": None,
+    "flash_type": "success"
+}
+
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+def show_flash():
+    message = st.session_state.get("flash_message")
+
+    if message:
+        message_type = st.session_state.get("flash_type", "success")
+
+        if message_type == "success":
+            st.success(message)
+        else:
+            st.error(message)
+
+        st.session_state.flash_message = None
+
+
+def set_flash(message, message_type="success"):
+    st.session_state.flash_message = message
+    st.session_state.flash_type = message_type
+
+
+# =========================================================
+# 4. LOGIN
+# =========================================================
 
 if not st.session_state.authenticated:
+
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     with st.container(border=True):
@@ -116,7 +156,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 # =========================================================
-# 4. DATABASE CONNECTION
+# 5. DATABASE CONNECTION
 # =========================================================
 
 @st.cache_resource
@@ -126,6 +166,7 @@ def connect_database():
         st.secrets["SUPABASE_KEY"]
     )
 
+
 try:
     db = connect_database()
 except Exception as e:
@@ -133,7 +174,7 @@ except Exception as e:
     st.stop()
 
 # =========================================================
-# 5. CONSTANTS
+# 6. CONSTANTS
 # =========================================================
 
 GENERAL_BUSINESS = "General Business"
@@ -141,11 +182,14 @@ GENERAL_BUSINESS = "General Business"
 VEHICLE_CATEGORIES = [
     "Fuel",
     "Repair",
+    "Parts",
+    "Hydraulic Oil",
     "Tyres",
     "Servicing",
     "Toll",
     "Road Tax",
     "Insurance",
+    "Operator / Labour",
     "Other Vehicle Expense"
 ]
 
@@ -157,10 +201,24 @@ BUSINESS_CATEGORIES = [
     "Other Business Expense"
 ]
 
-VEHICLE_TYPES = ["Lorry", "Hilux", "Car", "Other"]
+VEHICLE_TYPES = [
+    "Lorry",
+    "Hilux",
+    "Car",
+    "Backhoe",
+    "Forklift",
+    "Other"
+]
+
+PAYMENT_METHODS = [
+    "Cash",
+    "Bank Transfer",
+    "Card",
+    "Other"
+]
 
 # =========================================================
-# 6. GENERAL FUNCTIONS
+# 7. GENERAL FUNCTIONS
 # =========================================================
 
 def rm(value):
@@ -193,26 +251,50 @@ def load_data():
         vehicles = db.table("vehicles").select("*").execute().data or []
         trips = db.table("trips").select("*").execute().data or []
         expenses = db.table("expenses").select("*").execute().data or []
+
         return vehicles, trips, expenses
+
     except Exception as e:
         st.error(f"Could not load business records: {e}")
         st.stop()
 
 
-def insert_record(table, values):
+def insert_record(table, values, token_key=None):
+    """
+    Submission token prevents the same form submission
+    from being processed again in the same session.
+    """
+
+    token = st.session_state.get(token_key) if token_key else None
+
+    if token and token in st.session_state.used_submission_tokens:
+        st.warning("This submission has already been processed.")
+        return
+
     try:
+        if token:
+            st.session_state.used_submission_tokens.add(token)
+
         db.table(table).insert(values).execute()
-        st.success("Saved successfully.")
-        refresh()
+
+        if token_key:
+            st.session_state[token_key] = str(uuid4())
+
+        set_flash("Saved successfully.")
+        st.rerun()
+
     except Exception as e:
+        if token:
+            st.session_state.used_submission_tokens.discard(token)
+
         st.error(f"Could not save record: {e}")
 
 
 def update_record(table, record_id, values):
     try:
         db.table(table).update(values).eq("id", record_id).execute()
-        st.success("Updated successfully.")
-        refresh()
+        set_flash("Updated successfully.")
+        st.rerun()
     except Exception as e:
         st.error(f"Could not update record: {e}")
 
@@ -220,8 +302,8 @@ def update_record(table, record_id, values):
 def delete_record(table, record_id):
     try:
         db.table(table).delete().eq("id", record_id).execute()
-        st.success("Record deleted.")
-        refresh()
+        set_flash("Record deleted.")
+        st.rerun()
     except Exception as e:
         st.error(f"Could not delete record: {e}")
 
@@ -282,6 +364,7 @@ def money_summary(trips, expenses):
     received = sum(number(t.get("received")) for t in trips)
     outstanding = income - received
     total_expenses = sum(number(e.get("amount")) for e in expenses)
+
     return income, received, outstanding, total_expenses
 
 
@@ -291,6 +374,7 @@ def expense_categories(existing, standard):
 
 def header(title, subtitle=None):
     st.title(title)
+
     if subtitle:
         st.caption(subtitle)
 
@@ -298,12 +382,13 @@ def header(title, subtitle=None):
 def show_trip_summary(trip):
     st.write(f"**Date:** {trip.get('trip_date', '-')}")
     st.write(f"**Vehicle:** {trip.get('vehicle', '-')}")
-    st.write(f"**Company:** {trip.get('company', '-')}")
-    st.write(f"**Trips:** {trip.get('trip_count', 0)}")
-    st.write(f"**Charge per trip:** {rm(trip.get('charge_per_trip'))}")
+    st.write(f"**Customer / Company:** {trip.get('company', '-')}")
+    st.write(f"**Days / Trips:** {trip.get('trip_count', 0)}")
+    st.write(f"**Rate per day / trip:** {rm(trip.get('charge_per_trip'))}")
     st.write(f"**Total charged:** {rm(trip_income(trip))}")
     st.write(f"**Received:** {rm(trip.get('received'))}")
     st.write(f"**Outstanding:** {rm(trip_outstanding(trip))}")
+
     if trip.get("notes"):
         st.write(f"**Notes:** {trip.get('notes')}")
 
@@ -311,16 +396,28 @@ def show_trip_summary(trip):
 def show_expense_summary(expense):
     st.write(f"**Date:** {expense.get('expense_date', '-')}")
     st.write(f"**Category:** {expense.get('category', '-')}")
-    st.write(f"**Type:** {'Business' if is_business(expense) else 'Vehicle'}")
+    st.write(
+        f"**Type:** {'Business' if is_business(expense) else 'Vehicle'}"
+    )
     st.write(f"**Vehicle:** {expense.get('vehicle', '-')}")
     st.write(f"**Amount:** {rm(expense.get('amount'))}")
     st.write(f"**Payment method:** {expense.get('payment_method', '-')}")
     st.write(f"**Description:** {expense.get('description', '-')}")
+
     if expense.get("notes"):
         st.write(f"**Notes:** {expense.get('notes')}")
 
+
+def vehicle_can_trip(vehicle_type):
+    return vehicle_type == "Lorry"
+
+
+def vehicle_can_rent(vehicle_type):
+    return vehicle_type == "Backhoe"
+
+
 # =========================================================
-# 7. LOAD CURRENT DATA
+# 8. LOAD CURRENT DATA
 # =========================================================
 
 vehicles, trips, expenses = load_data()
@@ -338,8 +435,18 @@ lorry_names = [
 ]
 
 # =========================================================
-# 8. SIDEBAR NAVIGATION
+# 9. SIDEBAR NAVIGATION
 # =========================================================
+
+pages = [
+    "Dashboard",
+    "Add Trip",
+    "Trip History",
+    "Add Expense",
+    "Expense History",
+    "Manage Vehicles",
+    "Statements"
+]
 
 with st.sidebar:
     st.markdown("## 🚛 THEAVA MAJU")
@@ -348,19 +455,6 @@ with st.sidebar:
         unsafe_allow_html=True
     )
     st.divider()
-
-    pages = [
-        "Dashboard",
-        "Add Trip",
-        "Trip History",
-        "Add Expense",
-        "Expense History",
-        "Manage Vehicles",
-        "Statements"
-    ]
-
-    if "page" not in st.session_state:
-        st.session_state.page = "Dashboard"
 
     if st.session_state.page not in pages:
         st.session_state.page = "Dashboard"
@@ -371,6 +465,7 @@ with st.sidebar:
         index=pages.index(st.session_state.page),
         key="main_navigation"
     )
+
     st.session_state.page = page
 
     st.divider()
@@ -379,11 +474,13 @@ with st.sidebar:
     if st.button("Log out", use_container_width=True):
         st.session_state.authenticated = False
         st.session_state.selected_vehicle_id = None
+        st.session_state.vehicle_action = None
         st.rerun()
 
+show_flash()
 
 # =========================================================
-# 9. VEHICLE DETAIL PAGE
+# 10. VEHICLE DETAIL PAGE
 # =========================================================
 
 selected_vehicle_id = st.session_state.get("selected_vehicle_id")
@@ -422,34 +519,67 @@ if page == "Dashboard" and selected_vehicle:
         number(e.get("amount")) for e in vehicle_expenses
     )
 
-    # VEHICLE SUMMARY
-
     c1, c2 = st.columns(2)
-    c1.metric("Total Income Charged", rm(income))
+    c1.metric("Total Income", rm(income))
     c2.metric("Money Received", rm(received))
 
     c3, c4 = st.columns(2)
     c3.metric("Outstanding", rm(outstanding))
-    c4.metric("Vehicle Expenses", rm(total_expense))
+    c4.metric("Total Expenses", rm(total_expense))
 
     st.divider()
+    st.subheader("Actions")
 
-    # VEHICLE ACTION BUTTONS
+    action = st.session_state.get("vehicle_action")
 
-    st.subheader("Vehicle Actions")
+    # ACTION BUTTONS
 
-    col1, col2 = st.columns(2)
+    if vehicle_can_trip(vehicle_type):
 
-    with col1:
-        if st.button(
-            "＋ ADD TRIP",
-            key="vehicle_add_trip",
-            use_container_width=True
-        ):
-            st.session_state.vehicle_action = "trip"
-            st.rerun()
+        col1, col2 = st.columns(2)
 
-    with col2:
+        with col1:
+            if st.button(
+                "＋ ADD TRIP",
+                key="vehicle_add_trip",
+                use_container_width=True
+            ):
+                st.session_state.vehicle_action = "trip"
+                st.rerun()
+
+        with col2:
+            if st.button(
+                "＋ ADD EXPENSE",
+                key="vehicle_add_expense",
+                use_container_width=True
+            ):
+                st.session_state.vehicle_action = "expense"
+                st.rerun()
+
+    elif vehicle_can_rent(vehicle_type):
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button(
+                "＋ ADD RENTAL INCOME",
+                key="vehicle_add_rental",
+                use_container_width=True
+            ):
+                st.session_state.vehicle_action = "rental"
+                st.rerun()
+
+        with col2:
+            if st.button(
+                "＋ ADD EXPENSE",
+                key="vehicle_add_expense",
+                use_container_width=True
+            ):
+                st.session_state.vehicle_action = "expense"
+                st.rerun()
+
+    else:
+
         if st.button(
             "＋ ADD EXPENSE",
             key="vehicle_add_expense",
@@ -461,70 +591,80 @@ if page == "Dashboard" and selected_vehicle:
     action = st.session_state.get("vehicle_action")
 
     # -----------------------------------------------------
-    # ADD TRIP DIRECTLY INSIDE VEHICLE PAGE
+    # LORRY TRIP FORM
     # -----------------------------------------------------
 
-    if action == "trip":
+    if action == "trip" and vehicle_can_trip(vehicle_type):
 
         st.divider()
         st.subheader(f"Add Trip · {registration}")
 
-        if vehicle_type != "Lorry":
-            st.warning("Trip records are currently available for lorries.")
-        else:
-            with st.form("vehicle_page_trip_form"):
+        with st.form("vehicle_page_trip_form"):
 
-                trip_date = st.date_input(
-                    "Trip Date",
-                    value=date.today()
-                )
+            trip_date = st.date_input(
+                "Trip Date",
+                value=date.today()
+            )
 
-                st.text_input(
-                    "Vehicle",
-                    value=registration,
-                    disabled=True
-                )
+            st.text_input(
+                "Vehicle",
+                value=registration,
+                disabled=True
+            )
 
-                company = st.text_input("Company / Customer")
+            company = st.text_input("Company / Customer")
 
-                trip_count = st.number_input(
-                    "Number of Trips",
-                    min_value=1,
-                    step=1,
-                    value=1
-                )
+            trip_count = st.number_input(
+                "Number of Trips",
+                min_value=1,
+                step=1,
+                value=1
+            )
 
-                charge = st.number_input(
-                    "Charge Per Trip (RM)",
-                    min_value=0.0,
-                    step=10.0
-                )
+            charge = st.number_input(
+                "Charge Per Trip (RM)",
+                min_value=0.0,
+                step=10.0
+            )
 
-                received = st.number_input(
-                    "Amount Received (RM)",
-                    min_value=0.0,
-                    step=10.0
-                )
+            received = st.number_input(
+                "Amount Received (RM)",
+                min_value=0.0,
+                step=10.0
+            )
 
-                notes = st.text_area("Notes (Optional)")
+            notes = st.text_area("Notes (Optional)")
 
-                save_trip = st.form_submit_button(
-                    "SAVE TRIP",
-                    use_container_width=True
-                )
+            save_trip = st.form_submit_button(
+                "SAVE TRIP",
+                use_container_width=True
+            )
 
-                if save_trip:
+            if save_trip:
 
-                    if not company.strip():
-                        st.error("Please enter a company or customer.")
+                if not company.strip():
+                    st.error("Please enter a company or customer.")
 
-                    elif received > trip_count * charge:
-                        st.error(
-                            "Received amount cannot exceed total trip charge."
-                        )
+                elif received > trip_count * charge:
+                    st.error(
+                        "Received cannot exceed total trip charge."
+                    )
 
+                else:
+                    token = st.session_state.get(
+                        "vehicle_trip_token"
+                    )
+
+                    if not token:
+                        token = str(uuid4())
+                        st.session_state.vehicle_trip_token = token
+
+                    if token in st.session_state.used_submission_tokens:
+                        st.warning("This trip has already been submitted.")
                     else:
                         try:
+                            st.session_state.used_submission_tokens.add(token)
+
                             db.table("trips").insert({
                                 "trip_date": str(trip_date),
                                 "vehicle": registration,
@@ -535,15 +675,119 @@ if page == "Dashboard" and selected_vehicle:
                                 "notes": notes.strip()
                             }).execute()
 
+                            st.session_state.vehicle_trip_token = str(uuid4())
                             st.session_state.vehicle_action = None
-                            st.success("Trip saved successfully.")
+
+                            set_flash("Trip saved successfully.")
                             st.rerun()
 
                         except Exception as e:
+                            st.session_state.used_submission_tokens.discard(token)
                             st.error(f"Could not save trip: {e}")
 
     # -----------------------------------------------------
-    # ADD EXPENSE DIRECTLY INSIDE VEHICLE PAGE
+    # BACKHOE RENTAL FORM
+    # -----------------------------------------------------
+
+    elif action == "rental" and vehicle_can_rent(vehicle_type):
+
+        st.divider()
+        st.subheader(f"Backhoe Rental · {registration}")
+
+        with st.form("backhoe_rental_form"):
+
+            rental_date = st.date_input(
+                "Rental Start Date",
+                value=date.today()
+            )
+
+            st.text_input(
+                "Machine",
+                value=registration,
+                disabled=True
+            )
+
+            customer = st.text_input("Customer / Company")
+
+            rental_days = st.number_input(
+                "Number of Rental Days",
+                min_value=1,
+                step=1,
+                value=1
+            )
+
+            daily_rate = st.number_input(
+                "Rental Rate Per Day (RM)",
+                min_value=0.0,
+                step=50.0
+            )
+
+            total_rental = rental_days * daily_rate
+
+            st.metric("Total Rental Amount", rm(total_rental))
+
+            rental_received = st.number_input(
+                "Amount Received (RM)",
+                min_value=0.0,
+                step=50.0
+            )
+
+            rental_notes = st.text_area("Notes (Optional)")
+
+            save_rental = st.form_submit_button(
+                "SAVE RENTAL",
+                use_container_width=True
+            )
+
+            if save_rental:
+
+                if not customer.strip():
+                    st.error("Please enter the customer or company.")
+
+                elif daily_rate <= 0:
+                    st.error("Enter a rental rate greater than zero.")
+
+                elif rental_received > total_rental:
+                    st.error("Received cannot exceed total rental amount.")
+
+                else:
+                    token = st.session_state.get("backhoe_rental_token")
+
+                    if not token:
+                        token = str(uuid4())
+                        st.session_state.backhoe_rental_token = token
+
+                    if token in st.session_state.used_submission_tokens:
+                        st.warning("This rental has already been submitted.")
+                    else:
+                        try:
+                            st.session_state.used_submission_tokens.add(token)
+
+                            db.table("trips").insert({
+                                "trip_date": str(rental_date),
+                                "vehicle": registration,
+                                "company": customer.strip(),
+                                "trip_count": int(rental_days),
+                                "charge_per_trip": daily_rate,
+                                "received": rental_received,
+                                "notes": (
+                                    "BACKHOE RENTAL | "
+                                    + rental_notes.strip()
+                                )
+                            }).execute()
+
+                            st.session_state.backhoe_rental_token = str(uuid4())
+                            st.session_state.vehicle_action = None
+
+                            set_flash("Backhoe rental saved successfully.")
+                            st.rerun()
+
+                        except Exception as e:
+                            st.session_state.used_submission_tokens.discard(token)
+                            st.error(f"Could not save rental: {e}")
+
+    # -----------------------------------------------------
+    # VEHICLE EXPENSE FORM
     # -----------------------------------------------------
 
     elif action == "expense":
@@ -559,7 +803,7 @@ if page == "Dashboard" and selected_vehicle:
             )
 
             st.text_input(
-                "Vehicle",
+                "Vehicle / Machine",
                 value=registration,
                 disabled=True
             )
@@ -577,7 +821,7 @@ if page == "Dashboard" and selected_vehicle:
 
             payment_method = st.selectbox(
                 "Payment Method",
-                ["Cash", "Bank Transfer", "Card", "Other"]
+                PAYMENT_METHODS
             )
 
             description = st.text_input("Description")
@@ -594,72 +838,51 @@ if page == "Dashboard" and selected_vehicle:
                     st.error("Enter an amount greater than zero.")
 
                 else:
-                    try:
-                        db.table("expenses").insert({
-                            "expense_date": str(expense_date),
-                            "category": category,
-                            "vehicle": registration,
-                            "amount": amount,
-                            "payment_method": payment_method,
-                            "description": description.strip(),
-                            "notes": notes.strip()
-                        }).execute()
+                    token = st.session_state.get(
+                        "vehicle_expense_token"
+                    )
 
-                        st.session_state.vehicle_action = None
-                        st.success("Vehicle expense saved successfully.")
-                        st.rerun()
+                    if not token:
+                        token = str(uuid4())
+                        st.session_state.vehicle_expense_token = token
 
-                    except Exception as e:
-                        st.error(f"Could not save expense: {e}")
+                    if token in st.session_state.used_submission_tokens:
+                        st.warning("This expense has already been submitted.")
+                    else:
+                        try:
+                            st.session_state.used_submission_tokens.add(token)
 
-    if action in ["trip", "expense"]:
+                            db.table("expenses").insert({
+                                "expense_date": str(expense_date),
+                                "category": category,
+                                "vehicle": registration,
+                                "amount": amount,
+                                "payment_method": payment_method,
+                                "description": description.strip(),
+                                "notes": notes.strip()
+                            }).execute()
+
+                            st.session_state.vehicle_expense_token = str(uuid4())
+                            st.session_state.vehicle_action = None
+
+                            set_flash("Vehicle expense saved successfully.")
+                            st.rerun()
+
+                        except Exception as e:
+                            st.session_state.used_submission_tokens.discard(token)
+                            st.error(f"Could not save expense: {e}")
+
+    if action in ["trip", "rental", "expense"]:
+
         if st.button("CANCEL"):
             st.session_state.vehicle_action = None
             st.rerun()
 
-    st.divider()
-
-    # VEHICLE TRIP HISTORY
-
-    st.subheader("Vehicle Trip History")
-
-    if not vehicle_trips:
-        st.info("No trips recorded for this vehicle.")
-    else:
-        for trip in sorted(
-            vehicle_trips,
-            key=lambda x: str(x.get("trip_date", "")),
-            reverse=True
-        ):
-            with st.expander(
-                f"{trip.get('trip_date')} · "
-                f"{trip.get('company', '')} · "
-                f"{rm(trip_income(trip))}"
-            ):
-                show_trip_summary(trip)
-
-    # VEHICLE EXPENSE HISTORY
-
-    st.subheader("Vehicle Expense History")
-
-    if not vehicle_expenses:
-        st.info("No expenses recorded for this vehicle.")
-    else:
-        for expense in sorted(
-            vehicle_expenses,
-            key=lambda x: str(x.get("expense_date", "")),
-            reverse=True
-        ):
-            with st.expander(
-                f"{expense.get('expense_date')} · "
-                f"{expense.get('category')} · "
-                f"{rm(expense.get('amount'))}"
-            ):
-                show_expense_summary(expense)
-
+    # No trip history or expense history sections here.
+    # Keep this page clean and simple.
 
 # =========================================================
-# 10. DASHBOARD
+# 11. DASHBOARD
 # =========================================================
 
 elif page == "Dashboard":
@@ -713,18 +936,23 @@ elif page == "Dashboard":
 
     if not active_vehicles:
         st.info("No active vehicles. Register vehicles under Manage Vehicles.")
+
     else:
         for start in range(0, len(active_vehicles), 2):
+
             cols = st.columns(2)
 
             for col, vehicle in zip(
                 cols, active_vehicles[start:start + 2]
             ):
+
                 with col:
+
                     registration = vehicle["registration"]
                     vtype = vehicle.get("vehicle_type", "Vehicle")
 
                     with st.container(border=True):
+
                         st.markdown(f"### 🚛 {registration}")
                         st.caption(vtype)
 
@@ -738,7 +966,10 @@ elif page == "Dashboard":
                             if e.get("vehicle") == registration
                         ]
 
-                        v_income = sum(trip_income(t) for t in v_trips)
+                        v_income = sum(
+                            trip_income(t) for t in v_trips
+                        )
+
                         v_cost = sum(
                             number(e.get("amount")) for e in v_expenses
                         )
@@ -751,37 +982,49 @@ elif page == "Dashboard":
                             key=f"open_vehicle_{vehicle['id']}",
                             use_container_width=True
                         ):
+
                             st.session_state.selected_vehicle_id = vehicle["id"]
+                            st.session_state.vehicle_action = None
                             st.rerun()
 
 # =========================================================
-# 11. ADD TRIP
+# 12. ADD TRIP
 # =========================================================
 
 elif page == "Add Trip":
 
-    header("Add Trip", "Record a new vehicle trip.")
+    header("Add Trip", "Record a new lorry trip.")
 
     if not lorry_names:
+
         st.warning("Register an active lorry under Manage Vehicles first.")
+
     else:
+
         prefill = st.session_state.get("trip_vehicle_prefill")
+
         default_index = (
             lorry_names.index(prefill)
             if prefill in lorry_names else 0
         )
 
-        with st.form("add_trip_form"):
+        with st.form(
+            f"add_trip_form_{st.session_state.trip_form_token}"
+        ):
 
-            trip_date = st.date_input("Trip Date", value=date.today())
+            trip_date = st.date_input(
+                "Trip Date",
+                value=date.today()
+            )
 
             vehicle = st.selectbox(
-                "Vehicle",
+                "Lorry",
                 lorry_names,
                 index=default_index
             )
 
             company = st.text_input("Company / Customer")
+
             trip_count = st.number_input(
                 "Number of Trips",
                 min_value=1,
@@ -809,47 +1052,64 @@ elif page == "Add Trip":
             )
 
             if submitted:
+
                 if not company.strip():
                     st.error("Please enter a company or customer.")
+
                 elif received > trip_count * charge:
-                    st.error("Received amount cannot exceed total trip charge.")
+                    st.error("Received cannot exceed total trip charge.")
+
                 else:
-                    insert_record("trips", {
-                        "trip_date": str(trip_date),
-                        "vehicle": vehicle,
-                        "company": company.strip(),
-                        "trip_count": int(trip_count),
-                        "charge_per_trip": charge,
-                        "received": received,
-                        "notes": notes.strip()
-                    })
+                    insert_record(
+                        "trips",
+                        {
+                            "trip_date": str(trip_date),
+                            "vehicle": vehicle,
+                            "company": company.strip(),
+                            "trip_count": int(trip_count),
+                            "charge_per_trip": charge,
+                            "received": received,
+                            "notes": notes.strip()
+                        },
+                        "trip_form_token"
+                    )
 
 # =========================================================
-# 12. TRIP HISTORY
+# 13. TRIP HISTORY
 # =========================================================
 
 elif page == "Trip History":
 
-    header("Trip History", "View, edit and delete recorded trips.")
+    header("Trip History", "View, edit and delete trip and rental records.")
 
     if not trips:
-        st.info("No trips recorded yet.")
+
+        st.info("No trip or rental records yet.")
+
     else:
+
         sorted_trips = sorted(
             trips,
             key=lambda x: str(x.get("trip_date", "")),
             reverse=True
         )
 
-        st.caption(f"{len(sorted_trips)} trip records")
+        st.caption(f"{len(sorted_trips)} records")
 
         for trip in sorted_trips:
 
             trip_id = trip["id"]
 
+            is_rental = str(
+                trip.get("notes") or ""
+            ).startswith("BACKHOE RENTAL")
+
+            record_label = "Backhoe Rental" if is_rental else "Trip"
+
             with st.expander(
-                f"{trip.get('trip_date')} · {trip.get('vehicle')} · "
-                f"{trip.get('company')} · {rm(trip_income(trip))}"
+                f"{record_label} · {trip.get('trip_date')} · "
+                f"{trip.get('vehicle')} · {trip.get('company')} · "
+                f"{rm(trip_income(trip))}"
             ):
 
                 show_trip_summary(trip)
@@ -859,14 +1119,22 @@ elif page == "Trip History":
                 with st.form(f"edit_trip_{trip_id}"):
 
                     edit_date = st.date_input(
-                        "Trip Date",
+                        "Date",
                         value=safe_date(trip.get("trip_date")),
                         key=f"trip_date_{trip_id}"
                     )
 
                     old_vehicle = trip.get("vehicle", "")
+
                     trip_vehicles = sorted(set(
-                        lorry_names + ([old_vehicle] if old_vehicle else [])
+                        lorry_names
+                        + [
+                            v.get("registration", "")
+                            for v in vehicles
+                            if v.get("vehicle_type") == "Backhoe"
+                            and v.get("registration")
+                        ]
+                        + ([old_vehicle] if old_vehicle else [])
                     ))
 
                     if not trip_vehicles:
@@ -889,7 +1157,7 @@ elif page == "Trip History":
                     )
 
                     edit_count = st.number_input(
-                        "Number of Trips",
+                        "Number of Trips / Rental Days",
                         min_value=1,
                         step=1,
                         value=max(1, int(number(trip.get("trip_count")))),
@@ -897,7 +1165,7 @@ elif page == "Trip History":
                     )
 
                     edit_charge = st.number_input(
-                        "Charge Per Trip (RM)",
+                        "Charge Per Trip / Day (RM)",
                         min_value=0.0,
                         value=number(trip.get("charge_per_trip")),
                         step=10.0,
@@ -921,10 +1189,13 @@ elif page == "Trip History":
                     save = st.form_submit_button("SAVE CHANGES")
 
                     if save:
+
                         if not edit_company.strip():
                             st.error("Company name is required.")
+
                         elif edit_received > edit_count * edit_charge:
                             st.error("Received cannot exceed total charge.")
+
                         else:
                             update_record("trips", trip_id, {
                                 "trip_date": str(edit_date),
@@ -937,20 +1208,23 @@ elif page == "Trip History":
                             })
 
                 with st.form(f"delete_trip_{trip_id}"):
+
                     confirm = st.checkbox(
-                        "I confirm I want to permanently delete this trip.",
+                        "I confirm I want to permanently delete this record.",
                         key=f"confirm_trip_{trip_id}"
                     )
-                    delete = st.form_submit_button("DELETE TRIP")
+
+                    delete = st.form_submit_button("DELETE RECORD")
 
                     if delete:
+
                         if confirm:
                             delete_record("trips", trip_id)
                         else:
                             st.warning("Please confirm before deleting.")
 
 # =========================================================
-# 13. ADD EXPENSE
+# 14. ADD EXPENSE
 # =========================================================
 
 elif page == "Add Expense":
@@ -967,8 +1241,11 @@ elif page == "Add Expense":
     if expense_type == "Vehicle Expense":
 
         if not active_vehicles:
+
             st.warning("Register a vehicle under Manage Vehicles first.")
+
         else:
+
             prefill = st.session_state.get("expense_vehicle_prefill")
             active_names = vehicle_list(active_vehicles)
 
@@ -977,7 +1254,9 @@ elif page == "Add Expense":
                 if prefill in active_names else 0
             )
 
-            with st.form("vehicle_expense_form"):
+            with st.form(
+                f"vehicle_expense_form_{st.session_state.vehicle_expense_form_token}"
+            ):
 
                 expense_date = st.date_input(
                     "Expense Date",
@@ -985,7 +1264,7 @@ elif page == "Add Expense":
                 )
 
                 vehicle = st.selectbox(
-                    "Vehicle",
+                    "Vehicle / Machine",
                     active_names,
                     index=default_index
                 )
@@ -1003,7 +1282,7 @@ elif page == "Add Expense":
 
                 payment_method = st.selectbox(
                     "Payment Method",
-                    ["Cash", "Bank Transfer", "Card", "Other"]
+                    PAYMENT_METHODS
                 )
 
                 description = st.text_input("Description")
@@ -1015,18 +1294,24 @@ elif page == "Add Expense":
                 )
 
                 if submitted:
+
                     if amount <= 0:
                         st.error("Enter an amount greater than zero.")
+
                     else:
-                        insert_record("expenses", {
-                            "expense_date": str(expense_date),
-                            "category": category,
-                            "vehicle": vehicle,
-                            "amount": amount,
-                            "payment_method": payment_method,
-                            "description": description.strip(),
-                            "notes": notes.strip()
-                        })
+                        insert_record(
+                            "expenses",
+                            {
+                                "expense_date": str(expense_date),
+                                "category": category,
+                                "vehicle": vehicle,
+                                "amount": amount,
+                                "payment_method": payment_method,
+                                "description": description.strip(),
+                                "notes": notes.strip()
+                            },
+                            "vehicle_expense_form_token"
+                        )
 
     else:
 
@@ -1035,7 +1320,9 @@ elif page == "Add Expense":
             "Examples: electricity, worker salary and office expenses."
         )
 
-        with st.form("business_expense_form"):
+        with st.form(
+            f"business_expense_form_{st.session_state.business_expense_form_token}"
+        ):
 
             expense_date = st.date_input(
                 "Expense Date",
@@ -1057,7 +1344,7 @@ elif page == "Add Expense":
 
             payment_method = st.selectbox(
                 "Payment Method",
-                ["Cash", "Bank Transfer", "Card", "Other"],
+                PAYMENT_METHODS,
                 key="business_payment_method"
             )
 
@@ -1070,21 +1357,27 @@ elif page == "Add Expense":
             )
 
             if submitted:
+
                 if amount <= 0:
                     st.error("Enter an amount greater than zero.")
+
                 else:
-                    insert_record("expenses", {
-                        "expense_date": str(expense_date),
-                        "category": category,
-                        "vehicle": GENERAL_BUSINESS,
-                        "amount": amount,
-                        "payment_method": payment_method,
-                        "description": description.strip(),
-                        "notes": notes.strip()
-                    })
+                    insert_record(
+                        "expenses",
+                        {
+                            "expense_date": str(expense_date),
+                            "category": category,
+                            "vehicle": GENERAL_BUSINESS,
+                            "amount": amount,
+                            "payment_method": payment_method,
+                            "description": description.strip(),
+                            "notes": notes.strip()
+                        },
+                        "business_expense_form_token"
+                    )
 
 # =========================================================
-# 14. EXPENSE HISTORY
+# 15. EXPENSE HISTORY
 # =========================================================
 
 elif page == "Expense History":
@@ -1092,8 +1385,11 @@ elif page == "Expense History":
     header("Expense History", "View, edit and delete all expenses.")
 
     if not expenses:
+
         st.info("No expenses recorded yet.")
+
     else:
+
         sorted_expenses = sorted(
             expenses,
             key=lambda x: str(x.get("expense_date", "")),
@@ -1133,16 +1429,25 @@ elif page == "Expense History":
                     )
 
                     if edit_type == "Other Business Expense":
+
                         edit_vehicle = GENERAL_BUSINESS
+
                         category_options = expense_categories(
                             expense.get("category"),
                             BUSINESS_CATEGORIES
                         )
+
                     else:
+
                         old_vehicle = expense.get("vehicle", "")
+
                         available = sorted(set(
-                            vehicle_list(vehicles) +
-                            ([old_vehicle] if old_vehicle and old_vehicle != GENERAL_BUSINESS else [])
+                            vehicle_list(vehicles)
+                            + (
+                                [old_vehicle]
+                                if old_vehicle and old_vehicle != GENERAL_BUSINESS
+                                else []
+                            )
                         ))
 
                         if not available:
@@ -1168,7 +1473,8 @@ elif page == "Expense History":
                         category_options,
                         index=(
                             category_options.index(expense.get("category"))
-                            if expense.get("category") in category_options else 0
+                            if expense.get("category") in category_options
+                            else 0
                         ),
                         key=f"expense_category_{expense_id}"
                     )
@@ -1181,11 +1487,10 @@ elif page == "Expense History":
                         key=f"expense_amount_{expense_id}"
                     )
 
-                    payment_options = [
-                        "Cash", "Bank Transfer", "Card", "Other"
-                    ]
+                    payment_options = PAYMENT_METHODS.copy()
 
                     old_payment = expense.get("payment_method") or "Cash"
+
                     if old_payment not in payment_options:
                         payment_options.append(old_payment)
 
@@ -1211,8 +1516,10 @@ elif page == "Expense History":
                     save = st.form_submit_button("SAVE CHANGES")
 
                     if save:
+
                         if edit_amount <= 0:
                             st.error("Enter an amount greater than zero.")
+
                         else:
                             update_record("expenses", expense_id, {
                                 "expense_date": str(edit_date),
@@ -1225,6 +1532,7 @@ elif page == "Expense History":
                             })
 
                 with st.form(f"delete_expense_{expense_id}"):
+
                     confirm = st.checkbox(
                         "I confirm I want to permanently delete this expense.",
                         key=f"confirm_expense_{expense_id}"
@@ -1233,13 +1541,14 @@ elif page == "Expense History":
                     delete = st.form_submit_button("DELETE EXPENSE")
 
                     if delete:
+
                         if confirm:
                             delete_record("expenses", expense_id)
                         else:
                             st.warning("Please confirm before deleting.")
 
 # =========================================================
-# 15. MANAGE VEHICLES
+# 16. MANAGE VEHICLES
 # =========================================================
 
 elif page == "Manage Vehicles":
@@ -1251,7 +1560,7 @@ elif page == "Manage Vehicles":
     with st.form("register_vehicle_form"):
 
         registration = st.text_input(
-            "Vehicle Registration Number"
+            "Vehicle / Machine Registration or Name"
         ).strip().upper()
 
         vehicle_type = st.selectbox(
@@ -1265,13 +1574,16 @@ elif page == "Manage Vehicles":
         )
 
         if submitted:
+
             if not registration:
-                st.error("Enter a registration number.")
+                st.error("Enter a registration number or machine name.")
+
             elif any(
                 v.get("registration", "").upper() == registration
                 for v in vehicles
             ):
-                st.error("This registration number already exists.")
+                st.error("This registration or name already exists.")
+
             else:
                 insert_record("vehicles", {
                     "registration": registration,
@@ -1283,21 +1595,24 @@ elif page == "Manage Vehicles":
     st.subheader("Active Vehicles")
 
     if not active_vehicles:
+
         st.info("No active vehicles.")
+
     else:
+
         for vehicle in active_vehicles:
 
             vehicle_id = vehicle["id"]
             registration = vehicle["registration"]
 
             with st.expander(
-                f"🚛 {registration} · {vehicle.get('vehicle_type', '')}"
+                f"{registration} · {vehicle.get('vehicle_type', '')}"
             ):
 
                 with st.form(f"edit_vehicle_{vehicle_id}"):
 
                     new_registration = st.text_input(
-                        "Registration Number",
+                        "Registration Number / Name",
                         value=registration,
                         key=f"registration_{vehicle_id}"
                     ).strip().upper()
@@ -1316,6 +1631,7 @@ elif page == "Manage Vehicles":
                     save = st.form_submit_button("SAVE VEHICLE")
 
                     if save:
+
                         duplicate = any(
                             v.get("registration", "").upper() == new_registration
                             and str(v.get("id")) != str(vehicle_id)
@@ -1324,8 +1640,10 @@ elif page == "Manage Vehicles":
 
                         if not new_registration:
                             st.error("Registration number is required.")
+
                         elif duplicate:
                             st.error("That registration number is already used.")
+
                         else:
                             update_record("vehicles", vehicle_id, {
                                 "registration": new_registration,
@@ -1333,6 +1651,7 @@ elif page == "Manage Vehicles":
                             })
 
                 with st.form(f"archive_vehicle_{vehicle_id}"):
+
                     confirm = st.checkbox(
                         "I confirm I want to archive this vehicle.",
                         key=f"archive_confirm_{vehicle_id}"
@@ -1341,6 +1660,7 @@ elif page == "Manage Vehicles":
                     archive = st.form_submit_button("ARCHIVE VEHICLE")
 
                     if archive:
+
                         if confirm:
                             update_record("vehicles", vehicle_id, {
                                 "is_active": False
@@ -1356,8 +1676,11 @@ elif page == "Manage Vehicles":
     st.subheader("Archived Vehicles")
 
     if not archived:
+
         st.caption("No archived vehicles.")
+
     else:
+
         for vehicle in archived:
 
             vehicle_id = vehicle["id"]
@@ -1365,6 +1688,7 @@ elif page == "Manage Vehicles":
             with st.expander(
                 f"Archived · {vehicle.get('registration')}"
             ):
+
                 st.write(
                     f"Type: {vehicle.get('vehicle_type', 'Vehicle')}"
                 )
@@ -1373,12 +1697,13 @@ elif page == "Manage Vehicles":
                     "RESTORE VEHICLE",
                     key=f"restore_{vehicle_id}"
                 ):
+
                     update_record("vehicles", vehicle_id, {
                         "is_active": True
                     })
 
 # =========================================================
-# 16. STATEMENTS
+# 17. STATEMENTS
 # =========================================================
 
 elif page == "Statements":
@@ -1405,8 +1730,11 @@ elif page == "Statements":
         st.subheader("Vehicle Statement")
 
         if not all_vehicle_names:
+
             st.info("No vehicles registered.")
+
         else:
+
             selected_registration = st.selectbox(
                 "Select Vehicle",
                 all_vehicle_names
@@ -1422,11 +1750,16 @@ elif page == "Statements":
                 if e.get("vehicle") == selected_registration
             ]
 
-            income = sum(trip_income(t) for t in selected_trips)
+            income = sum(
+                trip_income(t) for t in selected_trips
+            )
+
             received = sum(
                 number(t.get("received")) for t in selected_trips
             )
+
             outstanding = income - received
+
             expense_total = sum(
                 number(e.get("amount")) for e in selected_expenses
             )
@@ -1440,37 +1773,53 @@ elif page == "Statements":
             c4.metric("Vehicle Expenses", rm(expense_total))
 
             st.divider()
-            st.subheader("Trip Records")
+            st.subheader("Income Records")
 
             if not selected_trips:
-                st.info("No trip records.")
+
+                st.info("No income records.")
+
             else:
+
                 for trip in sorted(
                     selected_trips,
                     key=lambda x: str(x.get("trip_date", "")),
                     reverse=True
                 ):
+
+                    is_rental = str(
+                        trip.get("notes") or ""
+                    ).startswith("BACKHOE RENTAL")
+
+                    label = "Rental" if is_rental else "Trip"
+
                     with st.expander(
-                        f"{trip.get('trip_date')} · "
+                        f"{label} · {trip.get('trip_date')} · "
                         f"{trip.get('company')} · {rm(trip_income(trip))}"
                     ):
+
                         show_trip_summary(trip)
 
             st.subheader("Expense Records")
 
             if not selected_expenses:
+
                 st.info("No vehicle expenses.")
+
             else:
+
                 for expense in sorted(
                     selected_expenses,
                     key=lambda x: str(x.get("expense_date", "")),
                     reverse=True
                 ):
+
                     with st.expander(
                         f"{expense.get('expense_date')} · "
                         f"{expense.get('category')} · "
                         f"{rm(expense.get('amount'))}"
                     ):
+
                         show_expense_summary(expense)
 
     # -----------------------------------------------------
@@ -1486,8 +1835,11 @@ elif page == "Statements":
         ]
 
         if not business_expenses:
+
             st.info("No general business expenses recorded.")
+
         else:
+
             total = sum(
                 number(e.get("amount"))
                 for e in business_expenses
@@ -1498,7 +1850,9 @@ elif page == "Statements":
             category_totals = {}
 
             for expense in business_expenses:
+
                 category = expense.get("category") or "Other"
+
                 category_totals[category] = (
                     category_totals.get(category, 0)
                     + number(expense.get("amount"))
@@ -1508,6 +1862,7 @@ elif page == "Statements":
             st.subheader("Expenses by Category")
 
             for category, amount in sorted(category_totals.items()):
+
                 st.write(f"**{category}**")
                 st.write(rm(amount))
                 st.divider()
@@ -1519,15 +1874,17 @@ elif page == "Statements":
                 key=lambda x: str(x.get("expense_date", "")),
                 reverse=True
             ):
+
                 with st.expander(
                     f"{expense.get('expense_date')} · "
                     f"{expense.get('category')} · "
                     f"{rm(expense.get('amount'))}"
                 ):
+
                     show_expense_summary(expense)
 
 # =========================================================
-# 17. FOOTER
+# 18. FOOTER
 # =========================================================
 
 st.divider()

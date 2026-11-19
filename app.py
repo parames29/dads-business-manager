@@ -39,7 +39,7 @@ db = create_client(url, key)
 
 def load_vehicles():
     return db.table("vehicles").select("*").order(
-        "registration"
+        "id"
     ).execute().data or []
 
 vehicles = load_vehicles()

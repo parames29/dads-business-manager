@@ -3,9 +3,9 @@ import streamlit as st
 from datetime import date
 from supabase import create_client
 
-# --------------------------------------------------
+# ==================================================
 # PAGE SETTINGS
-# --------------------------------------------------
+# ==================================================
 
 st.set_page_config(
     page_title="THEAVA MAJU",
@@ -14,9 +14,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --------------------------------------------------
+# ==================================================
 # LOGIN
-# --------------------------------------------------
+# ==================================================
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -26,10 +26,7 @@ if not st.session_state.authenticated:
     st.caption("FLEET MANAGEMENT SYSTEM")
 
     with st.form("login_form"):
-        password = st.text_input(
-            "Enter your app password",
-            type="password"
-        )
+        password = st.text_input("App Password", type="password")
         submitted = st.form_submit_button("Unlock")
 
     if submitted:
@@ -41,28 +38,57 @@ if not st.session_state.authenticated:
 
     st.stop()
 
-# --------------------------------------------------
-# DATABASE CONNECTION
-# --------------------------------------------------
+# ==================================================
+# DATABASE
+# ==================================================
 
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-db = create_client(url, key)
+db = create_client(
+    st.secrets["SUPABASE_URL"],
+    st.secrets["SUPABASE_KEY"]
+)
 
-# --------------------------------------------------
-# SETTINGS
-# --------------------------------------------------
 
-CATEGORIES = [
+def load_vehicles():
+    return db.table("vehicles").select("*").order("id").execute().data or []
+
+
+def load_trips():
+    return db.table("trips").select("*").order(
+        "trip_date", desc=True
+    ).execute().data or []
+
+
+def load_expenses():
+    return db.table("expenses").select("*").order(
+        "expense_date", desc=True
+    ).execute().data or []
+
+
+def money(value):
+    return f"RM {float(value or 0):,.2f}"
+
+
+# ==================================================
+# CATEGORIES
+# ==================================================
+
+VEHICLE_CATEGORIES = [
     "Fuel",
     "Repair",
     "Tyres",
     "Servicing",
     "Toll",
+    "Road Tax",
+    "Insurance",
+    "Other Vehicle Expense"
+]
+
+BUSINESS_CATEGORIES = [
     "Worker Salary",
     "Bin Cost",
     "Office Expense",
-    "Other"
+    "Utilities",
+    "Other Business Expense"
 ]
 
 PAYMENT_METHODS = [
@@ -73,61 +99,42 @@ PAYMENT_METHODS = [
 ]
 
 
-def money(value):
-    return f"RM {float(value or 0):,.2f}"
+# ==================================================
+# DATE HELPERS
+# ==================================================
+
+def month_range(year, month):
+    start = date(year, month, 1)
+
+    if month == 12:
+        end = date(year + 1, 1, 1)
+    else:
+        end = date(year, month + 1, 1)
+
+    return start, end
 
 
-# --------------------------------------------------
-# DATABASE FUNCTIONS
-# --------------------------------------------------
-
-def load_vehicles():
-    return (
-        db.table("vehicles")
-        .select("*")
-        .order("id")
-        .execute()
-        .data or []
-    )
+def in_month(value, start, end):
+    try:
+        record_date = date.fromisoformat(str(value)[:10])
+        return start <= record_date < end
+    except (ValueError, TypeError):
+        return False
 
 
-def load_trips():
-    return (
-        db.table("trips")
-        .select("*")
-        .order("trip_date", desc=True)
-        .execute()
-        .data or []
-    )
-
-
-def load_expenses():
-    return (
-        db.table("expenses")
-        .select("*")
-        .order("expense_date", desc=True)
-        .execute()
-        .data or []
-    )
-
-
-# --------------------------------------------------
-# DISPLAY FUNCTIONS
-# --------------------------------------------------
+# ==================================================
+# DISPLAY HELPERS
+# ==================================================
 
 def show_trips(rows):
     if not rows:
-        st.info("No trip records yet.")
+        st.info("No trips recorded.")
         return
 
     data = []
 
     for t in rows:
-        total = (
-            int(t["trip_count"])
-            * float(t["charge_per_trip"])
-        )
-
+        total = int(t["trip_count"]) * float(t["charge_per_trip"])
         received = float(t["received"])
 
         data.append({
@@ -135,18 +142,17 @@ def show_trips(rows):
             "Vehicle": t["vehicle"],
             "Company": t["company"],
             "Trips": t["trip_count"],
-            "Rate": money(t["charge_per_trip"]),
-            "Total Charged": money(total),
+            "Charged": money(total),
             "Received": money(received),
             "Outstanding": money(total - received)
         })
 
-    st.dataframe(data, use_container_width=True)
+    st.dataframe(data, use_container_width=True, hide_index=True)
 
 
 def show_expenses(rows):
     if not rows:
-        st.info("No expense records yet.")
+        st.info("No expenses recorded.")
         return
 
     data = []
@@ -154,81 +160,76 @@ def show_expenses(rows):
     for e in rows:
         data.append({
             "Date": e["expense_date"],
+            "Type": (
+                "Other Business"
+                if e["vehicle"] == "General Business"
+                else "Vehicle"
+            ),
             "Category": e["category"],
             "Vehicle": e["vehicle"],
-            "Amount": money(e["amount"]),
             "Description": e["description"],
-            "Payment": e["payment_method"]
+            "Amount": money(e["amount"])
         })
 
-    st.dataframe(data, use_container_width=True)
+    st.dataframe(data, use_container_width=True, hide_index=True)
 
 
-# --------------------------------------------------
-# ADD TRIP FORM
-# --------------------------------------------------
+# ==================================================
+# ADD TRIP
+# ==================================================
 
-def add_trip_form(vehicle_list, default_vehicle=None, form_key="add_trip"):
-    if not vehicle_list:
-        st.warning("Please add a vehicle first.")
+def add_trip_form(vehicles, form_key="add_trip"):
+    lorries = [
+        v["registration"]
+        for v in vehicles
+        if v["vehicle_type"] == "Lorry" and v["is_active"]
+    ]
+
+    if not lorries:
+        st.warning("No active lorries. Please add a lorry first.")
         return
 
-    st.subheader("Add Trip")
-
-    default_index = 0
-
-    if default_vehicle in vehicle_list:
-        default_index = vehicle_list.index(default_vehicle)
-
     with st.form(form_key):
-        trip_date = st.date_input(
-            "Trip date",
-            value=date.today()
-        )
+        trip_date = st.date_input("Trip Date", value=date.today())
 
-        vehicle = st.selectbox(
-            "Vehicle",
-            vehicle_list,
-            index=default_index
-        )
+        vehicle = st.selectbox("Lorry", lorries)
 
         company = st.text_input("Company / Customer")
 
         count = st.number_input(
-            "Number of trips",
+            "Number of Trips",
             min_value=1,
             max_value=100,
             value=1
         )
 
         rate = st.number_input(
-            "Charge per trip (RM)",
+            "Charge Per Trip (RM)",
             min_value=0.0,
             step=10.0
         )
 
         total = count * rate
-
-        st.write("**Total charge:**", money(total))
+        st.write("**Total Charged:**", money(total))
 
         received = st.number_input(
-            "Money received (RM)",
+            "Money Received (RM)",
             min_value=0.0,
-            value=0.0,
             step=10.0
         )
 
         notes = st.text_area("Notes")
 
-        submitted = st.form_submit_button("Save Trip")
+        submitted = st.form_submit_button(
+            "Save Trip",
+            use_container_width=True
+        )
 
     if submitted:
         if not company.strip():
-            st.error("Enter the company or customer name.")
-
+            st.error("Please enter a company or customer.")
         elif received > total:
-            st.error("Received amount cannot exceed total charge.")
-
+            st.error("Received cannot exceed total charged.")
         else:
             db.table("trips").insert({
                 "trip_date": str(trip_date),
@@ -240,46 +241,185 @@ def add_trip_form(vehicle_list, default_vehicle=None, form_key="add_trip"):
                 "notes": notes.strip()
             }).execute()
 
-            st.success("Trip saved successfully.")
+            st.success("Trip saved.")
             st.rerun()
 
 
-# --------------------------------------------------
-# ADD EXPENSE FORM
-# --------------------------------------------------
+# ==================================================
+# SMART TRIP EDIT AND DELETE
+# ==================================================
 
-def add_expense_form(vehicle_list, default_vehicle=None, form_key="add_expense"):
-    if not vehicle_list:
-        st.warning("Please add a vehicle first.")
+def manage_trips(trips, vehicles, selected_vehicle=None):
+    rows = [
+        t for t in trips
+        if selected_vehicle is None
+        or t["vehicle"] == selected_vehicle
+    ]
+
+    st.markdown("### Recent Trips")
+
+    if not rows:
+        st.info("No trips to manage yet.")
         return
 
-    default_index = 0
+    vehicle_options = [
+        v["registration"] for v in vehicles if v["is_active"]
+    ]
 
-    if default_vehicle in vehicle_list:
-        default_index = vehicle_list.index(default_vehicle)
+    for t in rows[:30]:
+        total = int(t["trip_count"]) * float(t["charge_per_trip"])
 
-    st.subheader("Add Expense")
+        heading = (
+            f'{t["trip_date"]}  |  {t["vehicle"]}  |  '
+            f'{t["company"]}  |  {money(total)}'
+        )
+
+        with st.expander(heading):
+            st.caption(
+                f'Received: {money(t["received"])} · '
+                f'Outstanding: {money(total - float(t["received"]))}'
+            )
+
+            options = list(vehicle_options)
+
+            if t["vehicle"] not in options:
+                options.append(t["vehicle"])
+
+            with st.form(f'edit_trip_{t["id"]}'):
+                trip_date = st.date_input(
+                    "Trip Date",
+                    value=date.fromisoformat(str(t["trip_date"])),
+                    key=f'trip_date_{t["id"]}'
+                )
+
+                vehicle = st.selectbox(
+                    "Vehicle",
+                    options,
+                    index=options.index(t["vehicle"]),
+                    key=f'trip_vehicle_{t["id"]}'
+                )
+
+                company = st.text_input(
+                    "Company / Customer",
+                    value=t["company"],
+                    key=f'trip_company_{t["id"]}'
+                )
+
+                count = st.number_input(
+                    "Number of Trips",
+                    min_value=1,
+                    max_value=100,
+                    value=int(t["trip_count"]),
+                    key=f'trip_count_{t["id"]}'
+                )
+
+                rate = st.number_input(
+                    "Charge Per Trip (RM)",
+                    min_value=0.0,
+                    value=float(t["charge_per_trip"]),
+                    key=f'trip_rate_{t["id"]}'
+                )
+
+                received = st.number_input(
+                    "Money Received (RM)",
+                    min_value=0.0,
+                    value=float(t["received"]),
+                    key=f'trip_received_{t["id"]}'
+                )
+
+                notes = st.text_area(
+                    "Notes",
+                    value=t.get("notes") or "",
+                    key=f'trip_notes_{t["id"]}'
+                )
+
+                save = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True
+                )
+
+            if save:
+                if not company.strip():
+                    st.error("Company name is required.")
+                elif received > count * rate:
+                    st.error("Received cannot exceed total charged.")
+                else:
+                    db.table("trips").update({
+                        "trip_date": str(trip_date),
+                        "vehicle": vehicle,
+                        "company": company.strip(),
+                        "trip_count": int(count),
+                        "charge_per_trip": float(rate),
+                        "received": float(received),
+                        "notes": notes.strip()
+                    }).eq("id", t["id"]).execute()
+
+                    st.success("Trip updated.")
+                    st.rerun()
+
+            st.divider()
+
+            confirm = st.checkbox(
+                "I confirm I want to delete this trip",
+                key=f'delete_trip_confirm_{t["id"]}'
+            )
+
+            if st.button(
+                "Delete Trip",
+                key=f'delete_trip_{t["id"]}',
+                disabled=not confirm,
+                use_container_width=True
+            ):
+                db.table("trips").delete().eq(
+                    "id", t["id"]
+                ).execute()
+
+                st.success("Trip deleted.")
+                st.rerun()
+
+
+# ==================================================
+# ADD EXPENSE
+# ==================================================
+
+def add_expense_form(vehicles, form_key="add_expense"):
+    active_vehicles = [
+        v["registration"] for v in vehicles if v["is_active"]
+    ]
 
     with st.form(form_key):
         expense_date = st.date_input(
-            "Expense date",
+            "Expense Date",
             value=date.today()
         )
 
-        category = st.selectbox(
-            "Category",
-            CATEGORIES
+        expense_type = st.radio(
+            "Expense Type",
+            ["Vehicle Expense", "Other Business Expense"]
         )
 
-        vehicle = st.selectbox(
-            "Vehicle",
-            ["General Business"] + vehicle_list,
-            index=(
-                default_index + 1
-                if default_vehicle in vehicle_list
-                else 0
+        if expense_type == "Vehicle Expense":
+            if not active_vehicles:
+                st.warning("Add a vehicle before recording vehicle expenses.")
+                vehicle = "General Business"
+            else:
+                vehicle = st.selectbox(
+                    "Choose Vehicle",
+                    active_vehicles
+                )
+
+            category = st.selectbox(
+                "Expense Category",
+                VEHICLE_CATEGORIES
             )
-        )
+
+        else:
+            vehicle = "General Business"
+
+            category = st.selectbox(
+                "Business Expense Category",
+                BUSINESS_CATEGORIES
+            )
 
         amount = st.number_input(
             "Amount (RM)",
@@ -288,19 +428,23 @@ def add_expense_form(vehicle_list, default_vehicle=None, form_key="add_expense")
         )
 
         payment = st.selectbox(
-            "Payment method",
+            "Payment Method",
             PAYMENT_METHODS
         )
 
         description = st.text_input("Description")
         notes = st.text_area("Notes")
 
-        submitted = st.form_submit_button("Save Expense")
+        submitted = st.form_submit_button(
+            "Save Expense",
+            use_container_width=True
+        )
 
     if submitted:
-        if not description.strip():
-            st.error("Enter an expense description.")
-
+        if expense_type == "Vehicle Expense" and not active_vehicles:
+            st.error("Please add a vehicle first.")
+        elif not description.strip():
+            st.error("Please enter a description.")
         else:
             db.table("expenses").insert({
                 "expense_date": str(expense_date),
@@ -312,13 +456,157 @@ def add_expense_form(vehicle_list, default_vehicle=None, form_key="add_expense")
                 "notes": notes.strip()
             }).execute()
 
-            st.success("Expense saved successfully.")
+            st.success("Expense saved.")
             st.rerun()
 
 
-# --------------------------------------------------
+# ==================================================
+# SMART EXPENSE EDIT AND DELETE
+# ==================================================
+
+def manage_expenses(expenses, vehicles):
+    st.markdown("### Recent Expenses")
+
+    if not expenses:
+        st.info("No expenses to manage yet.")
+        return
+
+    active_vehicles = [
+        v["registration"] for v in vehicles if v["is_active"]
+    ]
+
+    for e in expenses[:30]:
+        heading = (
+            f'{e["expense_date"]}  |  {e["category"]}  |  '
+            f'{money(e["amount"])}'
+        )
+
+        with st.expander(heading):
+            st.caption(
+                f'{e["description"]} · {e["vehicle"]}'
+            )
+
+            vehicle_options = ["General Business"] + active_vehicles
+
+            if e["vehicle"] not in vehicle_options:
+                vehicle_options.append(e["vehicle"])
+
+            old_category = e["category"]
+
+            if e["vehicle"] == "General Business":
+                category_options = BUSINESS_CATEGORIES.copy()
+            else:
+                category_options = VEHICLE_CATEGORIES.copy()
+
+            if old_category not in category_options:
+                category_options.append(old_category)
+
+            old_payment = e["payment_method"]
+
+            with st.form(f'edit_expense_{e["id"]}'):
+                expense_date = st.date_input(
+                    "Expense Date",
+                    value=date.fromisoformat(str(e["expense_date"])),
+                    key=f'exp_date_{e["id"]}'
+                )
+
+                vehicle = st.selectbox(
+                    "Expense For",
+                    vehicle_options,
+                    index=vehicle_options.index(e["vehicle"]),
+                    key=f'exp_vehicle_{e["id"]}'
+                )
+
+                if vehicle == "General Business":
+                    new_categories = BUSINESS_CATEGORIES.copy()
+                else:
+                    new_categories = VEHICLE_CATEGORIES.copy()
+
+                if old_category not in new_categories:
+                    new_categories.append(old_category)
+
+                category = st.selectbox(
+                    "Category",
+                    new_categories,
+                    index=new_categories.index(old_category),
+                    key=f'exp_category_{e["id"]}'
+                )
+
+                amount = st.number_input(
+                    "Amount (RM)",
+                    min_value=0.01,
+                    value=float(e["amount"]),
+                    key=f'exp_amount_{e["id"]}'
+                )
+
+                payment = st.selectbox(
+                    "Payment Method",
+                    PAYMENT_METHODS,
+                    index=(
+                        PAYMENT_METHODS.index(old_payment)
+                        if old_payment in PAYMENT_METHODS else 0
+                    ),
+                    key=f'exp_payment_{e["id"]}'
+                )
+
+                description = st.text_input(
+                    "Description",
+                    value=e["description"],
+                    key=f'exp_description_{e["id"]}'
+                )
+
+                notes = st.text_area(
+                    "Notes",
+                    value=e.get("notes") or "",
+                    key=f'exp_notes_{e["id"]}'
+                )
+
+                save = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True
+                )
+
+            if save:
+                if not description.strip():
+                    st.error("Description is required.")
+                else:
+                    db.table("expenses").update({
+                        "expense_date": str(expense_date),
+                        "category": category,
+                        "vehicle": vehicle,
+                        "amount": float(amount),
+                        "payment_method": payment,
+                        "description": description.strip(),
+                        "notes": notes.strip()
+                    }).eq("id", e["id"]).execute()
+
+                    st.success("Expense updated.")
+                    st.rerun()
+
+            st.divider()
+
+            confirm = st.checkbox(
+                "I confirm I want to delete this expense",
+                key=f'delete_expense_confirm_{e["id"]}'
+            )
+
+            if st.button(
+                "Delete Expense",
+                key=f'delete_expense_{e["id"]}',
+                disabled=not confirm,
+                use_container_width=True
+            ):
+                db.table("expenses").delete().eq(
+                    "id", e["id"]
+                ).execute()
+
+                st.success("Expense deleted.")
+                st.rerun()
+
+
+# ==================================================
 # DESIGN
-# --------------------------------------------------
+# ==================================================
 
 st.markdown("""
 <style>
@@ -326,29 +614,24 @@ st.markdown("""
     background: #0b0b0d;
     color: #f5f5f5;
 }
-
 .block-container {
     padding-top: 1.5rem;
     max-width: 1100px;
 }
-
 section[data-testid="stSidebar"] {
     background: #151518;
 }
-
 div.stButton > button {
     border-radius: 10px;
-    min-height: 45px;
+    min-height: 43px;
     border: 1px solid #33333a;
     background: #19191e;
     color: white;
 }
-
 div.stButton > button:hover {
     border-color: #a1a1aa;
     color: white;
 }
-
 .vehicle-card {
     background: #17171b;
     border: 1px solid #303036;
@@ -356,40 +639,35 @@ div.stButton > button:hover {
     padding: 17px;
     margin-bottom: 5px;
 }
-
 .vehicle-number {
     font-size: 21px;
     font-weight: 700;
-    color: #ffffff;
+    color: white;
 }
-
 .vehicle-type {
     color: #a1a1aa;
     font-size: 13px;
     margin-top: 5px;
 }
-
 .active-label {
     color: #4ade80;
     font-size: 12px;
     font-weight: 700;
     margin-top: 12px;
 }
-
 div[data-testid="stMetric"] {
     background: #17171b;
     border: 1px solid #303036;
-    padding: 14px;
+    padding: 13px;
     border-radius: 12px;
 }
-
 </style>
 """, unsafe_allow_html=True)
 
 
-# --------------------------------------------------
-# LOAD DATABASE RECORDS
-# --------------------------------------------------
+# ==================================================
+# LOAD DATA
+# ==================================================
 
 try:
     vehicles = load_vehicles()
@@ -397,31 +675,22 @@ try:
     expenses = load_expenses()
 
 except Exception as error:
-    st.error("Could not connect to the database.")
+    st.error("Database connection problem.")
     st.caption(str(error))
     st.stop()
 
-
 active_vehicles = [
-    v for v in vehicles
-    if v.get("is_active", True)
+    v for v in vehicles if v["is_active"]
 ]
 
-VEHICLES = [
-    v["registration"]
-    for v in active_vehicles
-]
-
-LORRIES = [
-    v["registration"]
-    for v in active_vehicles
-    if v["vehicle_type"] == "Lorry"
+archived_vehicles = [
+    v for v in vehicles if not v["is_active"]
 ]
 
 
-# --------------------------------------------------
+# ==================================================
 # HEADER
-# --------------------------------------------------
+# ==================================================
 
 st.markdown("""
 # 🚛 THEAVA MAJU
@@ -431,175 +700,170 @@ st.markdown("""
 st.divider()
 
 
-# --------------------------------------------------
-# NAVIGATION
-# --------------------------------------------------
+# ==================================================
+# MENU
+# ==================================================
 
 menu = st.sidebar.radio(
     "MENU",
     [
         "Dashboard",
         "Add Trip",
-        "Trip History",
         "Add Expense",
-        "Expense History",
+        "Manage Vehicles",
         "Vehicle Statement"
     ]
 )
 
 
-# --------------------------------------------------
-# VEHICLE DETAIL PAGE
-# --------------------------------------------------
+# ==================================================
+# DASHBOARD — MONTHLY BUSINESS OVERVIEW
+# ==================================================
 
-selected_vehicle_id = st.session_state.get(
-    "selected_vehicle_id"
-)
+if menu == "Dashboard":
 
-selected_vehicle = next(
-    (
-        v for v in active_vehicles
-        if v["id"] == selected_vehicle_id
-    ),
-    None
-)
+    st.markdown("## Business Overview")
 
+    today = date.today()
 
-if menu == "Dashboard" and selected_vehicle:
+    month_options = []
 
-    vehicle = selected_vehicle["registration"]
+    for i in range(12):
+        month_number = today.month - i
+        year_number = today.year
 
-    if st.button("← Back to Vehicles"):
-        st.session_state.selected_vehicle_id = None
-        st.session_state.vehicle_action = None
-        st.rerun()
+        while month_number <= 0:
+            month_number += 12
+            year_number -= 1
 
-    st.markdown(f"## {vehicle}")
-    st.caption(selected_vehicle["vehicle_type"] + " • ACTIVE")
+        month_options.append(
+            (date(year_number, month_number, 1).strftime("%B %Y"),
+             year_number, month_number)
+        )
 
-    vehicle_trips = [
+    selected_month = st.selectbox(
+        "Select Month",
+        month_options,
+        format_func=lambda x: x[0]
+    )
+
+    start, end = month_range(
+        selected_month[1],
+        selected_month[2]
+    )
+
+    monthly_trips = [
         t for t in trips
-        if t["vehicle"] == vehicle
+        if in_month(t["trip_date"], start, end)
     ]
+
+    monthly_expenses = [
+        e for e in expenses
+        if in_month(e["expense_date"], start, end)
+    ]
+
+    income_charged = sum(
+        int(t["trip_count"]) * float(t["charge_per_trip"])
+        for t in monthly_trips
+    )
+
+    money_received = sum(
+        float(t["received"])
+        for t in monthly_trips
+    )
+
+    outstanding = income_charged - money_received
 
     vehicle_expenses = [
-        e for e in expenses
-        if e["vehicle"] == vehicle
+        e for e in monthly_expenses
+        if e["vehicle"] != "General Business"
     ]
 
-    charged = sum(
-        int(t["trip_count"]) * float(t["charge_per_trip"])
-        for t in vehicle_trips
+    business_expenses = [
+        e for e in monthly_expenses
+        if e["vehicle"] == "General Business"
+    ]
+
+    total_vehicle_expenses = sum(
+        float(e["amount"]) for e in vehicle_expenses
     )
 
-    received = sum(
-        float(t["received"])
-        for t in vehicle_trips
+    total_business_expenses = sum(
+        float(e["amount"]) for e in business_expenses
     )
 
-    outstanding = charged - received
-
-    spent = sum(
-        float(e["amount"])
-        for e in vehicle_expenses
+    total_expenses = (
+        total_vehicle_expenses + total_business_expenses
     )
 
-    trip_count = sum(
-        int(t["trip_count"])
-        for t in vehicle_trips
+    profit = income_charged - total_expenses
+
+    st.caption("Monthly Profit & Loss")
+
+    a, b = st.columns(2)
+    a.metric("Income Charged", money(income_charged))
+    b.metric("Total Expenses", money(total_expenses))
+
+    a, b = st.columns(2)
+    a.metric(
+        "Net Profit / Loss",
+        money(profit),
+        delta="Profit" if profit >= 0 else "Loss",
+        delta_color="normal"
     )
+    b.metric("Outstanding Payments", money(outstanding))
 
     st.divider()
 
-    st.markdown("### Vehicle Overview")
+    st.markdown("### Expense Breakdown")
 
     a, b = st.columns(2)
-    a.metric("Total Trips", trip_count)
-    b.metric("Money Received", money(received))
+    a.metric("Vehicle Expenses", money(total_vehicle_expenses))
+    b.metric("Other Business Expenses", money(total_business_expenses))
 
-    a, b = st.columns(2)
-    a.metric("Outstanding", money(outstanding))
-    b.metric("Vehicle Expenses", money(spent))
+    st.markdown("### Vehicle Expense Details")
+
+    if vehicle_expenses:
+        for v in active_vehicles + archived_vehicles:
+            total = sum(
+                float(e["amount"])
+                for e in vehicle_expenses
+                if e["vehicle"] == v["registration"]
+            )
+
+            if total > 0:
+                st.write(
+                    f'**{v["registration"]}** — {money(total)}'
+                )
+    else:
+        st.caption("No vehicle expenses for this month.")
+
+    st.markdown("### Other Business Expenses")
+
+    if business_expenses:
+        for category in BUSINESS_CATEGORIES:
+            total = sum(
+                float(e["amount"])
+                for e in business_expenses
+                if e["category"] == category
+            )
+
+            if total > 0:
+                st.write(f"**{category}** — {money(total)}")
+    else:
+        st.caption("No other business expenses for this month.")
 
     st.divider()
 
-    st.markdown("### Manage Vehicle")
+    st.markdown("### Vehicles")
+    st.caption("Select a vehicle to open its records.")
 
-    a, b = st.columns(2)
-
-    with a:
-        if st.button("＋ Add Trip", use_container_width=True):
-            st.session_state.vehicle_action = "trip"
-            st.rerun()
-
-    with b:
-        if st.button("＋ Add Expense", use_container_width=True):
-            st.session_state.vehicle_action = "expense"
-            st.rerun()
-
-    action = st.session_state.get("vehicle_action")
-
-    if action == "trip":
-        st.divider()
-        if st.button("Close Trip Form"):
-            st.session_state.vehicle_action = None
-            st.rerun()
-
-        add_trip_form(
-            LORRIES if selected_vehicle["vehicle_type"] == "Lorry"
-            else VEHICLES,
-            default_vehicle=vehicle,
-            form_key="vehicle_add_trip"
-        )
-
-    elif action == "expense":
-        st.divider()
-        if st.button("Close Expense Form"):
-            st.session_state.vehicle_action = None
-            st.rerun()
-
-        add_expense_form(
-            VEHICLES,
-            default_vehicle=vehicle,
-            form_key="vehicle_add_expense"
-        )
-
-    st.divider()
-
-    st.markdown("### Trip History")
-    show_trips(vehicle_trips)
-
-    st.markdown("### Expense History")
-    show_expenses(vehicle_expenses)
-
-    st.markdown("### Vehicle Statement")
-    st.write("Income Charged:", money(charged))
-    st.write("Money Received:", money(received))
-    st.write("Outstanding:", money(outstanding))
-    st.write("Vehicle Expenses:", money(spent))
-
-
-# --------------------------------------------------
-# DASHBOARD
-# --------------------------------------------------
-
-
-
-elif menu == "Dashboard":
-
-    st.markdown("## Vehicles")
-    st.caption("Select a vehicle to manage its trips and expenses.")
-
-    # Show vehicles FIRST
-    if not active_vehicles:
-        st.info("No active vehicles. Add your first vehicle.")
-
-    for start in range(0, len(active_vehicles), 2):
+    for start_index in range(0, len(active_vehicles), 2):
         cols = st.columns(2)
 
         for col, v in zip(
             cols,
-            active_vehicles[start:start + 2]
+            active_vehicles[start_index:start_index + 2]
         ):
             with col:
                 st.markdown(
@@ -625,11 +889,7 @@ elif menu == "Dashboard":
                     use_container_width=True
                 ):
                     st.session_state.selected_vehicle_id = v["id"]
-                    st.session_state.vehicle_action = None
                     st.rerun()
-
-    # ADD VEHICLE BUTTON BELOW THE VEHICLE LIST
-    st.divider()
 
     if st.button("＋ Add Vehicle", use_container_width=True):
         st.session_state.show_add_vehicle = not (
@@ -639,11 +899,11 @@ elif menu == "Dashboard":
 
     if st.session_state.get("show_add_vehicle", False):
 
-        st.markdown("### Register New Vehicle")
+        with st.form("add_vehicle_form"):
+            st.markdown("### Register Vehicle")
 
-        with st.form("new_vehicle_form"):
             registration = st.text_input(
-                "Vehicle Registration"
+                "Registration Number"
             ).strip().upper()
 
             vehicle_type = st.selectbox(
@@ -660,10 +920,10 @@ elif menu == "Dashboard":
             ]
 
             if not registration:
-                st.error("Enter a vehicle registration.")
+                st.error("Enter a registration number.")
 
             elif registration in existing:
-                st.error("This vehicle already exists.")
+                st.error("This registration already exists.")
 
             else:
                 db.table("vehicles").insert({
@@ -676,315 +936,230 @@ elif menu == "Dashboard":
                 st.success("Vehicle added.")
                 st.rerun()
 
+    # Selected vehicle detail
+    selected_id = st.session_state.get("selected_vehicle_id")
 
-# --------------------------------------------------
-# GLOBAL ADD TRIP
-# --------------------------------------------------
+    selected_vehicle = next(
+        (v for v in active_vehicles if v["id"] == selected_id),
+        None
+    )
+
+    if selected_vehicle:
+
+        st.divider()
+
+        if st.button("← Back to Dashboard"):
+            st.session_state.selected_vehicle_id = None
+            st.rerun()
+
+        registration = selected_vehicle["registration"]
+
+        st.markdown(f"## {registration}")
+        st.caption(selected_vehicle["vehicle_type"])
+
+        selected_trips = [
+            t for t in trips if t["vehicle"] == registration
+        ]
+
+        selected_expenses = [
+            e for e in expenses if e["vehicle"] == registration
+        ]
+
+        charged = sum(
+            int(t["trip_count"]) * float(t["charge_per_trip"])
+            for t in selected_trips
+        )
+
+        received = sum(
+            float(t["received"]) for t in selected_trips
+        )
+
+        spent = sum(
+            float(e["amount"]) for e in selected_expenses
+        )
+
+        a, b = st.columns(2)
+        a.metric("Total Charged", money(charged))
+        b.metric("Received", money(received))
+
+        a, b = st.columns(2)
+        a.metric("Outstanding", money(charged - received))
+        b.metric("Total Expenses", money(spent))
+
+        st.markdown("### Trip Records")
+        show_trips(selected_trips)
+
+        st.markdown("### Expense Records")
+        show_expenses(selected_expenses)
+
+
+# ==================================================
+# ADD TRIP + MANAGE TRIPS ON SAME PAGE
+# ==================================================
 
 elif menu == "Add Trip":
 
-    add_trip_form(
-        LORRIES,
-        form_key="global_add_trip"
-    )
+    st.markdown("## Add Trip")
+    add_trip_form(vehicles)
+
+    st.divider()
+
+    manage_trips(trips, vehicles)
 
 
-# --------------------------------------------------
-# TRIP HISTORY / EDIT / DELETE
-# --------------------------------------------------
-
-elif menu == "Trip History":
-
-    st.markdown("## Trip History")
-    show_trips(trips)
-
-    if trips:
-
-        options = {
-            f'ID {t["id"]} | {t["trip_date"]} | {t["vehicle"]} | {t["company"]}': t
-            for t in trips
-        }
-
-        selected_label = st.selectbox(
-            "Select a trip to edit",
-            list(options)
-        )
-
-        t = options[selected_label]
-
-        with st.form("edit_trip"):
-
-            trip_date = st.date_input(
-                "Date",
-                value=date.fromisoformat(str(t["trip_date"]))
-            )
-
-            vehicle = st.selectbox(
-                "Vehicle",
-                VEHICLES or [t["vehicle"]],
-                index=(
-                    VEHICLES.index(t["vehicle"])
-                    if t["vehicle"] in VEHICLES else 0
-                )
-            )
-
-            company = st.text_input(
-                "Company",
-                value=t["company"]
-            )
-
-            count = st.number_input(
-                "Number of trips",
-                min_value=1,
-                max_value=100,
-                value=int(t["trip_count"])
-            )
-
-            rate = st.number_input(
-                "Rate per trip (RM)",
-                min_value=0.0,
-                value=float(t["charge_per_trip"]),
-                step=10.0
-            )
-
-            received = st.number_input(
-                "Received (RM)",
-                min_value=0.0,
-                value=float(t["received"]),
-                step=10.0
-            )
-
-            notes = st.text_area(
-                "Notes",
-                value=t.get("notes") or ""
-            )
-
-            save = st.form_submit_button("Save Changes")
-
-        if save:
-
-            if not company.strip():
-                st.error("Company name is required.")
-
-            elif received > count * rate:
-                st.error("Received cannot exceed total charge.")
-
-            else:
-                db.table("trips").update({
-                    "trip_date": str(trip_date),
-                    "vehicle": vehicle,
-                    "company": company.strip(),
-                    "trip_count": int(count),
-                    "charge_per_trip": float(rate),
-                    "received": float(received),
-                    "notes": notes.strip()
-                }).eq("id", t["id"]).execute()
-
-                st.success("Trip updated.")
-                st.rerun()
-
-        if st.checkbox("Confirm I want to delete this trip"):
-
-            if st.button("Delete Selected Trip"):
-                db.table("trips").delete().eq(
-                    "id", t["id"]
-                ).execute()
-
-                st.success("Trip deleted.")
-                st.rerun()
-
-
-# --------------------------------------------------
-# GLOBAL ADD EXPENSE
-# --------------------------------------------------
+# ==================================================
+# ADD EXPENSE + MANAGE EXPENSES ON SAME PAGE
+# ==================================================
 
 elif menu == "Add Expense":
 
-    add_expense_form(
-        VEHICLES,
-        form_key="global_add_expense"
+    st.markdown("## Add Expense")
+    add_expense_form(vehicles)
+
+    st.divider()
+
+    manage_expenses(expenses, vehicles)
+
+
+# ==================================================
+# MANAGE VEHICLES
+# ==================================================
+
+elif menu == "Manage Vehicles":
+
+    st.markdown("## Manage Vehicles")
+
+    st.caption(
+        "Remove a vehicle from the active list without deleting its records."
     )
 
+    if active_vehicles:
 
-# --------------------------------------------------
-# EXPENSE HISTORY / EDIT / DELETE
-# --------------------------------------------------
-
-elif menu == "Expense History":
-
-    st.markdown("## Expense History")
-    show_expenses(expenses)
-
-    if expenses:
-
-        options = {
-            f'ID {e["id"]} | {e["expense_date"]} | {e["description"]}': e
-            for e in expenses
-        }
-
-        label = st.selectbox(
-            "Select an expense to edit",
-            list(options)
+        selected = st.selectbox(
+            "Choose Active Vehicle",
+            active_vehicles,
+            format_func=lambda v: (
+                f'{v["registration"]} — {v["vehicle_type"]}'
+            )
         )
 
-        e = options[label]
+        st.write("Selected:", selected["registration"])
 
-        with st.form("edit_expense"):
+        confirm_remove = st.checkbox(
+            "I confirm I want to remove this vehicle from the active list."
+        )
 
-            expense_date = st.date_input(
-                "Date",
-                value=date.fromisoformat(str(e["expense_date"]))
-            )
+        if st.button(
+            "Remove Vehicle",
+            disabled=not confirm_remove,
+            use_container_width=True
+        ):
+            db.table("vehicles").update({
+                "is_active": False
+            }).eq("id", selected["id"]).execute()
 
-            category = st.selectbox(
-                "Category",
-                CATEGORIES,
-                index=(
-                    CATEGORIES.index(e["category"])
-                    if e["category"] in CATEGORIES else 0
-                )
-            )
+            st.success("Vehicle removed from active vehicles.")
+            st.rerun()
 
-            vehicle_options = ["General Business"] + VEHICLES
+    else:
+        st.info("No active vehicles.")
 
-            if e["vehicle"] not in vehicle_options:
-                vehicle_options.append(e["vehicle"])
+    st.divider()
 
-            vehicle = st.selectbox(
-                "Vehicle",
-                vehicle_options,
-                index=vehicle_options.index(e["vehicle"])
-            )
+    st.markdown("### Archived Vehicles")
 
-            amount = st.number_input(
-                "Amount (RM)",
-                min_value=0.01,
-                value=float(e["amount"]),
-                step=10.0
-            )
+    if archived_vehicles:
 
-            payment = st.selectbox(
-                "Payment method",
-                PAYMENT_METHODS,
-                index=(
-                    PAYMENT_METHODS.index(e["payment_method"])
-                    if e["payment_method"] in PAYMENT_METHODS else 0
-                )
-            )
+        for v in archived_vehicles:
+            with st.expander(
+                f'{v["registration"]} — {v["vehicle_type"]}'
+            ):
+                st.caption("This vehicle is currently inactive.")
 
-            description = st.text_input(
-                "Description",
-                value=e["description"]
-            )
+                if st.button(
+                    "Restore Vehicle",
+                    key=f'restore_{v["id"]}'
+                ):
+                    db.table("vehicles").update({
+                        "is_active": True
+                    }).eq("id", v["id"]).execute()
 
-            notes = st.text_area(
-                "Notes",
-                value=e.get("notes") or ""
-            )
+                    st.success("Vehicle restored.")
+                    st.rerun()
 
-            save = st.form_submit_button("Save Changes")
-
-        if save:
-
-            if not description.strip():
-                st.error("Description is required.")
-
-            else:
-                db.table("expenses").update({
-                    "expense_date": str(expense_date),
-                    "category": category,
-                    "vehicle": vehicle,
-                    "amount": float(amount),
-                    "payment_method": payment,
-                    "description": description.strip(),
-                    "notes": notes.strip()
-                }).eq("id", e["id"]).execute()
-
-                st.success("Expense updated.")
-                st.rerun()
-
-        if st.checkbox("Confirm I want to delete this expense"):
-
-            if st.button("Delete Selected Expense"):
-                db.table("expenses").delete().eq(
-                    "id", e["id"]
-                ).execute()
-
-                st.success("Expense deleted.")
-                st.rerun()
+    else:
+        st.caption("No archived vehicles.")
 
 
-# --------------------------------------------------
+# ==================================================
 # VEHICLE STATEMENT
-# --------------------------------------------------
+# ==================================================
 
 elif menu == "Vehicle Statement":
 
-    if not VEHICLES:
-        st.info("No active vehicles available.")
+    all_vehicle_options = active_vehicles + archived_vehicles
+
+    if not all_vehicle_options:
+        st.info("No vehicles found.")
 
     else:
-
-        vehicle = st.selectbox(
-            "Choose vehicle",
-            VEHICLES
+        selected = st.selectbox(
+            "Choose Vehicle",
+            all_vehicle_options,
+            format_func=lambda v: v["registration"]
         )
 
-        st.markdown(f"## Statement: {vehicle}")
+        registration = selected["registration"]
 
-        vehicle_trips = [
-            t for t in trips
-            if t["vehicle"] == vehicle
+        st.markdown(f"## {registration}")
+
+        selected_trips = [
+            t for t in trips if t["vehicle"] == registration
         ]
 
-        vehicle_expenses = [
-            e for e in expenses
-            if e["vehicle"] == vehicle
+        selected_expenses = [
+            e for e in expenses if e["vehicle"] == registration
         ]
 
         total_trips = sum(
-            int(t["trip_count"])
-            for t in vehicle_trips
+            int(t["trip_count"]) for t in selected_trips
         )
 
-        total_charged = sum(
+        charged = sum(
             int(t["trip_count"]) * float(t["charge_per_trip"])
-            for t in vehicle_trips
+            for t in selected_trips
         )
 
-        total_received = sum(
-            float(t["received"])
-            for t in vehicle_trips
+        received = sum(
+            float(t["received"]) for t in selected_trips
         )
 
-        total_expenses = sum(
-            float(e["amount"])
-            for e in vehicle_expenses
+        spent = sum(
+            float(e["amount"]) for e in selected_expenses
         )
 
         a, b = st.columns(2)
         a.metric("Total Trips", total_trips)
-        b.metric("Income Charged", money(total_charged))
+        b.metric("Income Charged", money(charged))
 
         a, b = st.columns(2)
-        a.metric("Money Received", money(total_received))
-        b.metric("Outstanding", money(total_charged - total_received))
+        a.metric("Money Received", money(received))
+        b.metric("Outstanding", money(charged - received))
 
-        st.metric("Vehicle Expenses", money(total_expenses))
+        st.metric("Total Vehicle Expenses", money(spent))
 
         st.divider()
 
         st.markdown("### Trip Details")
-        show_trips(vehicle_trips)
+        show_trips(selected_trips)
 
         st.markdown("### Expense Details")
-        show_expenses(vehicle_expenses)
+        show_expenses(selected_expenses)
 
 
-# --------------------------------------------------
+# ==================================================
 # FOOTER
-# --------------------------------------------------
+# ==================================================
 
 st.divider()
-
-st.caption("THEAVA MAJU • FLEET MANAGEMENT SYSTEM")
+st.caption("THEAVA MAJU • BUSINESS MANAGEMENT SYSTEM")

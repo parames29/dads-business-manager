@@ -228,6 +228,36 @@ if menu == "Dashboard":
 
     st.divider()
     st.markdown("## Vehicles")
+    
+    if st.button("＋ Add Vehicle", use_container_width=True):
+        st.session_state.show_add_vehicle = True
+
+    if st.session_state.get("show_add_vehicle", False):
+        st.subheader("Register New Vehicle")
+
+        with st.form("new_vehicle_form"):
+            registration = st.text_input("Vehicle Registration").strip().upper()
+            vehicle_type = st.selectbox(
+                "Vehicle Type",
+                ["Lorry", "Hilux", "Car", "Other"]
+            )
+            save_vehicle = st.form_submit_button("Save Vehicle")
+
+        if save_vehicle:
+            if not registration:
+                st.error("Enter vehicle registration.")
+            elif any(v["registration"].upper() == registration for v in vehicles):
+                st.error("This vehicle already exists.")
+            else:
+                db.table("vehicles").insert({
+                    "registration": registration,
+                    "vehicle_type": vehicle_type,
+                    "is_active": True
+                }).execute()
+                st.session_state.show_add_vehicle = False
+                st.success("Vehicle added successfully.")
+                st.rerun()
+
     st.caption("Manage your daily business activities")
 
 

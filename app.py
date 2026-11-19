@@ -163,29 +163,73 @@ except Exception as error:
     st.caption(str(error))
     st.stop()
 
+
 if menu == "Dashboard":
+    today = date.today()
+    month_start = today.replace(day=1)
+
+    monthly_trips = [
+        t for t in trips
+        if str(t["trip_date"]) >= str(month_start)
+    ]
+    monthly_expenses = [
+        e for e in expenses
+        if str(e["expense_date"]) >= str(month_start)
+    ]
+
     charged = sum(
         int(t["trip_count"]) * float(t["charge_per_trip"])
-        for t in trips
+        for t in monthly_trips
     )
-    received = sum(float(t["received"]) for t in trips)
+    received = sum(float(t["received"]) for t in monthly_trips)
     outstanding = charged - received
-    spent = sum(float(e["amount"]) for e in expenses)
-    today_spent = sum(
-        float(e["amount"]) for e in expenses
-        if str(e["expense_date"]) == str(date.today())
-    )
+    spent = sum(float(e["amount"]) for e in monthly_expenses)
+    trip_count = sum(int(t["trip_count"]) for t in monthly_trips)
+
+    st.markdown("## Business Overview")
+    st.caption(today.strftime("%B %Y"))
 
     a, b = st.columns(2)
-    a.metric("Income Charged", money(charged))
-    b.metric("Money Received", money(received))
-    a.metric("Outstanding Bills", money(outstanding))
-    b.metric("Total Expenses", money(spent))
-    st.metric("Today's Expenses", money(today_spent))
-    st.metric("Received minus Expenses", money(received - spent))
+    a.metric("Income", money(received))
+    b.metric("Expenses", money(spent))
 
-    st.subheader("Recent Trips")
-    show_trips(trips[:10])
+    a, b = st.columns(2)
+    a.metric("Outstanding", money(outstanding))
+    b.metric("Total Trips", trip_count)
+
+    st.divider()
+
+    st.markdown("## Vehicles")
+    st.caption("Select a vehicle to manage its records")
+
+    active_vehicles = [v for v in vehicles if v["is_active"]]
+
+    for start in range(0, len(active_vehicles), 2):
+        cols = st.columns(2)
+
+        for col, v in zip(cols, active_vehicles[start:start + 2]):
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="vehicle-card">
+                        <div class="vehicle-number">
+                            {v["registration"]}
+                        </div>
+                        <div class="vehicle-type">
+                            {v["vehicle_type"]}
+                        </div>
+                        <div class="active-label">
+                            ● ACTIVE
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+    st.divider()
+    st.markdown("## Business Management")
+    st.caption("Manage your daily business activities")
+
 
 elif menu == "Add Trip":
     st.subheader("Add Trip")

@@ -102,7 +102,49 @@ def show_expenses(rows):
     } for e in rows]
     st.dataframe(data, use_container_width=True)
 
-st.title("🚛 THEAVA MAJU")
+
+st.markdown("""
+<style>
+.stApp {
+    background: #0b0b0d;
+    color: #f5f5f5;
+}
+section[data-testid="stSidebar"] {
+    background: #151518;
+}
+.block-container {
+    padding-top: 2rem;
+    max-width: 1100px;
+}
+.vehicle-card {
+    background: #17171b;
+    border: 1px solid #303036;
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 12px;
+}
+.vehicle-number {
+    font-size: 21px;
+    font-weight: 700;
+    color: white;
+}
+.vehicle-type {
+    color: #a1a1aa;
+    font-size: 13px;
+}
+.active-label {
+    color: #4ade80;
+    font-size: 12px;
+    font-weight: 600;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+# 🚛 THEAVA MAJU
+**FLEET MANAGEMENT SYSTEM**
+""")
+
 
 menu = st.sidebar.radio("Menu", [
     "Dashboard",
